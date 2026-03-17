@@ -607,11 +607,10 @@ if check_password():
                             "✅ Bestätigen & Analysieren",
                             type="primary",
                             key="pdf_confirm_btn",
-                        )
                     with col_hint:
                         st.caption(
-                            "Kiosk-Zuordnungen werden als „X" in den Kiosk-Spalten erkannt. "
-                            "Bereichs-Trenner: Zeilen, die nur „FOOD" oder „GETRÄNKE" enthalten."
+                            'Kiosk-Zuordnungen werden als "X" in den Kiosk-Spalten erkannt. '
+                            'Bereichs-Trenner: Zeilen, die nur "FOOD" oder "GETRÄNKE" enthalten.'
                         )
 
                     if confirm:
