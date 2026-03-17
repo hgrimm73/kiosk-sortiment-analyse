@@ -49,9 +49,14 @@ def format_k_list(ks):
 
 
 def checked_filename(original_name):
-    """'foo.pdf' → 'foo_checked.pdf'"""
+    """
+    'foo.xlsx' -> 'foo_checked.xlsx'
+    'foo.pdf'  -> 'foo_checked.xlsx'  (PDF ist nicht editierbar; Korrekturen
+                                        werden als Excel-Datei gespeichert)
+    """
     base, ext = os.path.splitext(original_name)
-    return base + "_checked" + ext
+    out_ext = ".xlsx" if ext.lower() == ".pdf" else ext
+    return base + "_checked" + out_ext
 
 
 def file_type(name):
@@ -138,17 +143,15 @@ def load_file_df(uploaded_file):
 
 def make_checked_bytes(edited_df, original_bytes, ftype):
     """
-    Erstellt die _checked-Datei:
-    - PDF:  original Bytes unveraendert (als Download-Kopie)
-    - XLSX: bearbeitetes DataFrame als neue Excel-Datei
+    Erstellt die _checked-Datei immer als Excel.
+    PDFs sind nicht rueckschreibbar; die Korrekturen aus dem Editor
+    existieren nur im DataFrame. Daher wird in beiden Faellen
+    das editierte DataFrame als .xlsx exportiert.
     """
-    if ftype == "pdf":
-        return original_bytes
-    else:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            edited_df.to_excel(writer, index=False, header=False)
-        return output.getvalue()
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        edited_df.to_excel(writer, index=False, header=False)
+    return output.getvalue()
 
 
 # ─────────────────────────────────────────────
@@ -723,10 +726,12 @@ def show_review_step(prefix, up_file):
             st.rerun()
     with col_dl:
         c_fname = checked_filename(fname)
-        c_mime  = ("application/pdf" if ftype_v == "pdf"
-                   else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        c_mime  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        label   = ("💾 Als Excel speichern (" + c_fname + ")"
+                   if ftype_v == "pdf"
+                   else "💾 Geprueft speichern (" + c_fname + ")")
         st.download_button(
-            "💾 Geprueft speichern (" + c_fname + ")",
+            label,
             data=checked_bytes,
             file_name=c_fname,
             mime=c_mime,
