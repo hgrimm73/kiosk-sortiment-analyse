@@ -52,11 +52,15 @@ def parse_df_to_result(df, filename):
     """
     Wandelt einen DataFrame (aus Excel oder korrigiertem PDF)
     in das interne Ergebnis-Format um.
+
+    BUGFIX: Nach der Kiosk-Spalten-Erkennung wird sichergestellt,
+    dass n_col und p_col nicht auf Kiosk-Spalten zeigen.
     """
     try:
         df = pd.DataFrame(df).fillna("").astype(str)
         h_row = -1
         k_map = {}          # Spalten-Index → Kiosk-Label
+        # Sichere Startwerte; werden weiter unten ggf. überschrieben
         n_col = None        # Produktname-Spalte
         p_col = None        # Preis-Spalte
         w_col = None        # Warengruppe-Spalte
@@ -90,9 +94,12 @@ def parse_df_to_result(df, filename):
         kiosk_cols = set(k_map.keys())
 
         # ── Fallback-Erkennung, falls Header-Labels fehlen ────────
+        # Suche unter allen Nicht-Kiosk-Spalten nach brauchbaren Kandidaten.
         if n_col is None or n_col in kiosk_cols:
+            # Längsten Text-Wert in Datenspalten als Produktname-Heuristik
             candidate_cols = [c for c in range(df.shape[1]) if c not in kiosk_cols]
             if candidate_cols:
+                # Nimm die erste Nicht-Kiosk-Spalte, die am häufigsten Text enthält
                 text_counts = {}
                 for c in candidate_cols:
                     text_counts[c] = sum(
@@ -103,6 +110,7 @@ def parse_df_to_result(df, filename):
                 n_col = max(candidate_cols, key=lambda c: text_counts.get(c, 0))
 
         if p_col is None or p_col in kiosk_cols:
+            # Suche Spalte, die häufig Preismuster enthält (Zahl mit Komma/Punkt)
             candidate_cols = [c for c in range(df.shape[1]) if c not in kiosk_cols and c != n_col]
             price_pattern = re.compile(r"\d+[.,]\d{2}")
             best_p, best_score = (candidate_cols[0] if candidate_cols else n_col + 1), 0
@@ -117,6 +125,7 @@ def parse_df_to_result(df, filename):
             p_col = best_p
 
         if w_col is None or w_col in kiosk_cols:
+            # Erste Nicht-Kiosk-Spalte, die weder n_col noch p_col ist
             fallback = [c for c in range(df.shape[1])
                         if c not in kiosk_cols and c != n_col and c != p_col]
             w_col = fallback[0] if fallback else n_col
@@ -131,11 +140,13 @@ def parse_df_to_result(df, filename):
             cat_val   = normalize(row.iloc[w_col] if w_col < len(row) else "")
             clean_name = name_val.upper()
 
+            # Bereichs-Trenner
             if clean_name in ["GETRÄNKE", "DRINKS"]:
                 sec = "DRINKS"; current_cat = "GETRÄNKE"; continue
             if clean_name in ["FOOD", "SPEISEN"]:
                 sec = "FOOD"; current_cat = "FOOD"; continue
 
+            # Wiederholte Kopfzeilen (PDF-Seitenumbrüche) überspringen
             if sum(1 for v in [normalize(str(x)).upper() for x in row]
                    if re.search(r"KIOSK.*\d", v)) >= 2:
                 continue
@@ -168,6 +179,7 @@ def parse_df_to_result(df, filename):
             "drinks": drinks,
             "ks": sorted(list(k_map.values())),
             "name": filename,
+            # Debug-Info für den Review-Step
             "_cols": {"n": n_col, "p": p_col, "w": w_col, "kiosk": sorted(kiosk_cols)},
         }
     except Exception:
@@ -175,6 +187,7 @@ def parse_df_to_result(df, filename):
 
 
 def extract_data(uploaded_file):
+    """Excel-Datei direkt einlesen und parsen."""
     try:
         df = pd.read_excel(uploaded_file, header=None)
         return parse_df_to_result(df, uploaded_file.name)
@@ -186,6 +199,7 @@ def extract_data(uploaded_file):
 # 4. PDF-IMPORT
 # ─────────────────────────────────────────────
 def extract_tables_from_pdf(uploaded_pdf):
+    """Liest alle Tabellen aus einem PDF und gibt einen kombinierten DataFrame zurück."""
     try:
         uploaded_pdf.seek(0)
         all_rows = []
@@ -216,7 +230,12 @@ def extract_tables_from_pdf(uploaded_pdf):
 
 
 def detect_pdf_issues(df):
+    """
+    Analysiert den rohen DataFrame auf typische PDF-Import-Probleme.
+    Gibt eine Liste von (typ, nachricht)-Tupeln zurück.
+    """
     issues = []
+
     h_row, k_cols, n_col = -1, [], 0
     for i, row in df.iterrows():
         row_vals = [normalize(str(x)).upper() for x in row]
@@ -238,6 +257,7 @@ def detect_pdf_issues(df):
         ))
         return issues
 
+    # Wiederholte Kopfzeilen
     repeated = [
         i + 1 for i, row in df.iloc[h_row + 1:].iterrows()
         if sum(1 for v in [normalize(str(x)).upper() for x in row]
@@ -246,10 +266,12 @@ def detect_pdf_issues(df):
     if repeated:
         issues.append((
             "warning",
-            f"Wiederholte Kopfzeilen erkannt (Zeilen {repeated[:5]}) – "
+            f"Wiederholte Kopfzeilen erkannt (Zeilen {repeated[:5]}"
+            f"{'...' if len(repeated) > 5 else ''}) – "
             "wahrscheinlich Seitenumbrüche. Werden beim Parsen automatisch ignoriert."
         ))
 
+    # Sehr lange Zellwerte
     long_cells = []
     for i, row in df.iloc[h_row + 1:].iterrows():
         for j, val in enumerate(row):
@@ -260,9 +282,11 @@ def detect_pdf_issues(df):
         issues.append((
             "warning",
             f"Sehr langer Text in {len(long_cells)} Zeile(n) – "
-            f"möglicherweise zusammengeführte Zellen aus dem PDF."
+            f"möglicherweise zusammengeführte Zellen aus dem PDF: "
+            f"{', '.join(long_cells[:3])}{'...' if len(long_cells) > 3 else ''}"
         ))
 
+    # Produkte mit Preis aber ohne Kiosk-Zuordnung
     price_pattern = re.compile(r"\d+[.,]\d{2}")
     no_kiosk = []
     for i, row in df.iloc[h_row + 1:].iterrows():
@@ -285,12 +309,13 @@ def detect_pdf_issues(df):
         extra = f" … und {len(no_kiosk) - 3} weitere" if len(no_kiosk) > 3 else ""
         issues.append((
             "info",
-            f'{len(no_kiosk)} Produkt(e) mit Preis, aber ohne Kiosk-Zuordnung (kein "X"): '
-            f'{preview}{extra}.'
+            f"{len(no_kiosk)} Produkt(e) mit Preis, aber ohne Kiosk-Zuordnung (kein X): "
+            f"{preview}{extra}."
         ))
 
     if not issues:
         issues.append(("success", "Keine Auffälligkeiten erkannt – Daten sehen gut aus."))
+
     return issues
 
 
@@ -414,9 +439,11 @@ def create_kiosk_diff_report(old, new):
 
 
 # ─────────────────────────────────────────────
-# 6. ANALYSE-ANZEIGE
+# 6. ANALYSE-ANZEIGE (wiederverwendbar)
 # ─────────────────────────────────────────────
 def show_analysis_ui(res, source_filename, key_prefix=""):
+    """Zeigt die vollständige Analyse-Ansicht für ein geparste Ergebnis."""
+    # Spalten-Info anzeigen (hilfreich zur Kontrolle)
     if "_cols" in res:
         c = res["_cols"]
         st.caption(
@@ -426,7 +453,7 @@ def show_analysis_ui(res, source_filename, key_prefix=""):
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Wie viele Dateien benötigen wir?", type="primary",
+        if st.button("Wie viele Dateien benötige ich?", type="primary",
                      key=f"{key_prefix}_files_btn"):
             f_t, d_t = 0, 0
             for s, l in [("food", "**🍔 FOOD**"), ("drinks", "**🥤 GETRÄNKE**")]:
@@ -493,6 +520,9 @@ if check_password():
 
     tab1, tab2 = st.tabs(["1. Einzel-Analyse", "Verkaufssortimente-Vergleich"])
 
+    # ════════════════════════════════════════
+    # TAB 1 – EINZEL-ANALYSE
+    # ════════════════════════════════════════
     with tab1:
         fmt = st.radio(
             "Dateiformat wählen:",
@@ -501,6 +531,7 @@ if check_password():
             key="tab1_format",
         )
 
+        # ── EXCEL ────────────────────────────────────
         if fmt == "📊 Excel (.xlsx)":
             up_file = st.file_uploader("Excel-Datei hochladen", type=["xlsx"], key="xlsx_up")
             if up_file:
@@ -508,18 +539,24 @@ if check_password():
                 if res:
                     show_analysis_ui(res, up_file.name, key_prefix="xlsx")
                 else:
-                    st.error("❌ Datei konnte nicht verarbeitet werden.")
+                    st.error(
+                        "❌ Datei konnte nicht verarbeitet werden. "
+                        "Bitte prüfen, ob eine Kiosk-Kopfzeile vorhanden ist."
+                    )
 
+        # ── PDF ──────────────────────────────────────
         else:
             up_pdf = st.file_uploader("PDF-Datei hochladen", type=["pdf"], key="pdf_up")
 
             if up_pdf:
+                # Neues PDF → State zurücksetzen
                 if st.session_state.get("pdf_filename") != up_pdf.name:
                     st.session_state["pdf_filename"]  = up_pdf.name
                     st.session_state["pdf_raw_df"]    = None
                     st.session_state["pdf_confirmed"] = False
                     st.session_state["pdf_result"]    = None
 
+                # Einmalige Extraktion
                 if st.session_state["pdf_raw_df"] is None:
                     with st.spinner("PDF wird eingelesen …"):
                         raw_df, err = extract_tables_from_pdf(up_pdf)
@@ -530,7 +567,9 @@ if check_password():
 
                 raw_df = st.session_state["pdf_raw_df"]
 
+                # ── REVIEW-SCHRITT ───────────────────
                 if not st.session_state.get("pdf_confirmed"):
+
                     issues = detect_pdf_issues(raw_df)
                     has_problems = any(t in ("error", "warning") for t, _ in issues)
 
@@ -571,8 +610,8 @@ if check_password():
                         )
                     with col_hint:
                         st.caption(
-                            'Kiosk-Zuordnungen werden als "X" in den Kiosk-Spalten erkannt. '
-                            'Bereichs-Trenner: Zeilen, die nur "FOOD" oder "GETRÄNKE" enthalten.'
+                            "Kiosk-Zuordnungen werden als 'X' in den Kiosk-Spalten erkannt. "
+                            "Bereichs-Trenner: Zeilen, die nur 'FOOD' oder 'GETRAENKE' enthalten."
                         )
 
                     if confirm:
@@ -583,17 +622,28 @@ if check_password():
                             st.session_state["pdf_confirmed"] = True
                             st.rerun()
                         else:
-                            st.error("❌ Analyse fehlgeschlagen.")
+                            st.error(
+                                "❌ Analyse fehlgeschlagen. Bitte prüfen, ob die Kopfzeile "
+                                "mit den Kiosk-Spalten korrekt eingelesen wurde."
+                            )
 
+                # ── ANALYSE (nach Bestätigung) ───────
                 else:
                     res = st.session_state["pdf_result"]
-                    st.success(f"✅ PDF erfolgreich importiert.")
+                    st.success(
+                        f"✅ PDF erfolgreich importiert – "
+                        f"{len(res['food'])} Food- und "
+                        f"{len(res['drinks'])} Getränke-Produkte erkannt."
+                    )
                     if st.button("↩ Zurück zur Datenprüfung", key="pdf_back_btn"):
                         st.session_state["pdf_confirmed"] = False
                         st.rerun()
                     st.divider()
                     show_analysis_ui(res, up_pdf.name, key_prefix="pdf")
 
+    # ════════════════════════════════════════
+    # TAB 2 – VERGLEICH
+    # ════════════════════════════════════════
     with tab2:
         st.header("Vergleich zwischen zwei Versionen")
         c_v1, c_v2 = st.columns(2)
@@ -640,23 +690,31 @@ if check_password():
                             st.subheader(f"Ehemalige Gruppe: {format_k_list(o_ks)}")
                             if len(new_variants) == 1:
                                 n_asort = list(new_variants.keys())[0]
-                                status = "STABIL" if n_asort == o_asort else "GEÄNDERT"
-                                st.markdown(f'<p class="status-stable">Status: {status}</p>', unsafe_allow_html=True)
+                                if n_asort == o_asort:
+                                    st.markdown(
+                                        '<p class="status-stable">Status: STABIL</p>',
+                                        unsafe_allow_html=True,
+                                    )
+                                else:
+                                    st.markdown(
+                                        '<p class="status-stable">Status: GEÄNDERT</p>',
+                                        unsafe_allow_html=True,
+                                    )
                                 o_d, n_d = dict(o_asort), dict(n_asort)
                                 for name in sorted(set(o_d.keys()) | set(n_d.keys())):
-                                    if name not in o_d:       st.success(f"[+] {name}: {n_d[name]}")
-                                    elif name not in n_d:     st.error(f"[-] {name}")
-                                    elif o_d[name] != n_d[name]:
-                                        st.warning(f"[!] {name}: {o_d[name]} -> {n_d[name]}")
+                                    if name not in o_d:           st.success(f"[+] {name}: {n_d[name]}")
+                                    elif name not in n_d:         st.error(f"[-] {name}")
+                                    elif o_d[name] != n_d[name]:  st.warning(f"[!] {name}: {o_d[name]} → {n_d[name]}")
                             else:
-                                st.markdown('<p class="status-split">Status: STRUKTURBRUCH / SPLIT</p>',
-                                            unsafe_allow_html=True)
+                                st.markdown(
+                                    '<p class="status-split">Status: STRUKTURBRUCH / SPLIT</p>',
+                                    unsafe_allow_html=True,
+                                )
                                 for i, (n_asort, sub_ks) in enumerate(new_variants.items()):
                                     with st.expander(f"Untergruppe {i + 1}: {format_k_list(sub_ks)}"):
                                         o_d, n_d = dict(o_asort), dict(n_asort)
                                         for name in sorted(set(o_d.keys()) | set(n_d.keys())):
-                                            if name not in o_d:       st.success(f"[+] {name}: {n_d[name]}")
-                                            elif name not in n_d:     st.error(f"[-] {name}")
-                                            elif o_d[name] != n_d[name]:
-                                                st.warning(f"[!] {name}: {o_d[name]} -> {n_d[name]}")
+                                            if name not in o_d:           st.success(f"[+] {name}: {n_d[name]}")
+                                            elif name not in n_d:         st.error(f"[-] {name}")
+                                            elif o_d[name] != n_d[name]:  st.warning(f"[!] {name}: {o_d[name]} → {n_d[name]}")
                             st.divider()
