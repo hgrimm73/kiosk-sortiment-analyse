@@ -38,6 +38,16 @@ def normalize(s):
     return " ".join(str(s).replace("\n", " ").split()).strip()
 
 
+def normalize_price(p):
+    """
+    Bereinigt Preis-Strings, die beim PDF-Export Leerzeichen enthalten koennen.
+    Beispiel: '5 ,00 EUR' -> '5,00 EUR'  |  '10 ,90 EUR' -> '10,90 EUR'
+    """
+    if not p:
+        return p
+    return re.sub(r"(\d)\s+([,.])", r"\1\2", p).strip()
+
+
 def format_k_list(ks):
     if not ks:
         return "-"
@@ -374,7 +384,7 @@ def parse_df_to_result(df, filename):
 
         for i, row in df.iloc[h_row + 1:].iterrows():
             name_val  = normalize(row.iloc[n_col] if n_col < len(row) else "")
-            price_val = normalize(row.iloc[p_col] if p_col < len(row) else "")
+            price_val = normalize_price(normalize(row.iloc[p_col] if p_col < len(row) else ""))
             cat_val   = normalize(row.iloc[w_col] if w_col < len(row) else "")
             clean_name = name_val.upper()
 
