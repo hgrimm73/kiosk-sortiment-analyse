@@ -11,7 +11,7 @@ st.set_page_config(page_title="Kiosk Sortiment Analyse", page_icon="🏟️", la
 
 
 # ─────────────────────────────────────────────
-# 1. PASSWORT-SCHUTZ
+# 1. PASSWORT-SCHUTZ (via Streamlit Secrets)
 # ─────────────────────────────────────────────
 def check_password():
     if "password_correct" not in st.session_state:
@@ -20,7 +20,16 @@ def check_password():
             unsafe_allow_html=True,
         )
         pwd = st.text_input("Passwort eingeben:", type="password", key="init_pw")
-        if pwd == "makeitso!":
+        
+        # Hier wird das Passwort aus den Secrets geladen
+        # Falls kein Secret gesetzt ist, wird ein Fehler abgefangen
+        try:
+            correct_password = st.secrets["password"]
+        except KeyError:
+            st.error("Konfigurationsfehler: Passwort wurde nicht in den Secrets definiert.")
+            return False
+
+        if pwd == correct_password:
             st.session_state["password_correct"] = True
             st.rerun()
         elif pwd != "":
